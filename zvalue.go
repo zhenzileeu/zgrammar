@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strconv"
 	"regexp"
+	"strings"
+	"sort"
 )
 
 type ZMap map[string]interface{}
@@ -14,14 +16,14 @@ func (m ZMap) Exists(key string) bool {
 		return false
 	}
 
-	_,ok := m["key"]
+	_,ok := m[key]
 	return ok
 }
 
 // Index returns value index by key
 func (m ZMap) Index(key string) ZValue {
 	if !m.Exists(key) {
-		return NilValue()
+		panic(key + " cannot be found in current map")
 	}
 
 	return ValueOf(m[key])
@@ -62,6 +64,7 @@ func (m ZMap) Clone() (ZMap) {
 }
 
 // Keys returns all map keys
+// NOTICE: keys order is not guaranteed
 func (m ZMap) Keys() ([]string) {
 	if m.IsNil() {
 		return nil
@@ -76,7 +79,34 @@ func (m ZMap) Keys() ([]string) {
 	return keys
 }
 
+// SortedKeys returns all map keys with a sort
+// NOTICE: keys order is guaranteed
+func (m ZMap) SortedKeys(direction string) ([]string) {
+	if strings.ToLower(direction) == "desc" {
+		direction = "desc"
+	} else if strings.ToLower(direction) == "asc" {
+		direction = "asc"
+	} else {
+		panic("sort direction [" + direction + "] is unknown")
+	}
+
+	keys := m.Keys()
+	if keys == nil {
+		return keys
+	}
+
+	sort.Strings(keys)
+
+	if direction == "desc" {
+		sort.Sort(sort.Reverse(sort.StringSlice(keys)))
+	} else {
+		sort.Strings(keys)
+	}
+	return keys
+}
+
 // Values returns all map value
+// NOTICE: values order is not guaranteed
 func (m ZMap) Values() ([]interface{}) {
 	if m.IsNil() {
 		return nil
@@ -89,6 +119,31 @@ func (m ZMap) Values() ([]interface{}) {
 	}
 
 	return values
+}
+
+// DirectionValues returns values with key sorted
+// NOTICE: values order is guaranteed
+func (m ZMap) DirectionValues(keyDirection string) ([]interface{}) {
+	keys := m.SortedKeys(keyDirection)
+	if keys == nil {
+		return nil
+	}
+
+	values := make([]interface{}, len(keys))
+	for i,key := range keys {
+		values[i] = m[key]
+	}
+
+	return values
+}
+
+// Delete deletes key from the map
+func (m ZMap) Delete(key string) {
+	if !m.Exists(key) {
+		return
+	}
+
+	delete(m, key)
 }
 
 type ZValue struct {
@@ -284,17 +339,17 @@ func (value ZValue) Index(i int) (ZValue) {
 
 // Kind returns v's Kind.
 // If v is the zero Value (IsValid returns false), Kind returns Invalid.
-func (value *ZValue) Kind() (reflect.Kind) {
+func (value ZValue) Kind() (reflect.Kind) {
 	return value.ReflectValue().Kind()
 }
 
 // ReflectValue return v's reflect value
-func (value *ZValue) ReflectValue() (reflect.Value) {
+func (value ZValue) ReflectValue() (reflect.Value) {
 	return reflect.ValueOf(value.value)
 }
 
 // Clone deep clone v's value
-func (value *ZValue) Clone() (ZValue) {
+func (value ZValue) Clone() (ZValue) {
 	if value.IsNil() {
 		return value.Copy()
 	}
@@ -308,43 +363,63 @@ func (value *ZValue) Clone() (ZValue) {
 }
 
 // Copy copy v's value
-func (value *ZValue) Copy() (ZValue) {
+func (value ZValue) Copy() (ZValue) {
 	return ValueOf(value.value)
 }
 
 // IsBool determine v's value is boolean
-func (value *ZValue) IsBool() (bool) {
+func (value ZValue) IsBool() (bool) {
 	return value.Kind() == reflect.Bool
 }
 
 // IsString determine v's value is string
-func (value *ZValue) IsString() (bool) {
+func (value ZValue) IsString() (bool) {
 	return value.Kind() == reflect.String
 }
 
 // IsStruct determine v's value is struct
-func (value *ZValue) IsStruct() bool {
+func (value ZValue) IsStruct() bool {
 	return value.Kind() == reflect.Struct
 }
 
 // Field get the field value of a struct
-// it panics if v's Kind is not Struct
-func (value *ZValue) Field(field string) (ZValue) {
-	if value.IsNil() {
-		return NilValue()
-	}
-
+// it panics if v's Kind is not Struct, or field is
+// not exists or field is not export
+func (value ZValue) Field(field string) (ZValue) {
 	if !value.IsStruct() {
 		panic("v's value is not struct")
+	}
+
+	if value.IsNil() {
+		return NilValue()
 	}
 
 	// search the struct field
 	fieldValue := value.ReflectValue().FieldByName(field)
 	if fieldValue.IsValid() {
+		if !fieldValue.CanInterface() {
+			panic("field " + field + " cannot export")
+		}
+
 		return ValueOf(fieldValue.Interface())
+	} else {
+		panic("field " + field + " is not exists")
+	}
+}
+
+// FieldExists determine whether a field exists in a struct
+// it panics if v's Kind is not struct
+func (value ZValue) FieldExists(field string) (bool) {
+	if !value.IsStruct() {
+		panic("v's value is not struct")
 	}
 
-	return NilValue()
+	if value.IsNil() {
+		return false
+	}
+
+	fieldV := value.ReflectValue().FieldByName(field)
+	return fieldV.IsValid()
 }
 
 // Int returns v's int value
@@ -391,7 +466,7 @@ func (value ZValue) Flatten() ([]interface{}) {
 			fv = append(fv, ValueOf(rfValue.MapIndex(key).Interface()).Flatten()...)
 		}
 	default:
-		fv = append(fv, value)
+		fv = append(fv, value.Value())
 	}
 
 	return fv
@@ -420,7 +495,7 @@ func (value ZValue) Empty() bool {
 }
 
 // recursiveClone recursively clone the source value
-func (value *ZValue) recursiveClone(dest, source reflect.Value) {
+func (value ZValue) recursiveClone(dest, source reflect.Value) {
 	if !dest.CanSet() {
 		panic("dest must can be set")
 	}
